@@ -13,39 +13,47 @@ class Generator(nn.Module):
 		self.num_filters = num_filters
 		self.num_classes = num_classes
 		self.target_res = target_res
+		self.num_blocks = int(math.log2(target_res))-2
 
-		self.layer1 = nn.Linear((128+num_classes),4*4*num_filters)
+		self.layer1 = nn.Sequential(OrderedDict([
+				('linear',nn.Linear(num_filters,4*4*num_filters)),
+				('relu',nn.ReLU()),
+				('batchnorm',nn.BatchNorm1d(4*4*num_filters)),
+				]))
 
 		self.upconv_blocks = []
 
-		nf = num_filters
+		nf = int(num_filters)
 
-		for res in range(math.log2(target_res)-2):
+		for res in range(self.num_blocks):
 
 			self.upconv_blocks.append(nn.Sequential(OrderedDict([
+					('fsconv_%d'%res,nn.ConvTranspose2d(nf,nf//2,3,2,1,1,bias=False)),
+					('relu_%d'%res,nn.ReLU()),
+					('batchnorm_%d'%res,nn.BatchNorm2d(nf//2)),
+					])))
+			nf = nf // 2
 
-							('fsconv_1',nn.ConvTranspose2D(nf,nf/2,3,2,1,1,bias=False)),
-							('relu_1',nn.LeakyReLU()),
-							('batchnorm_1',nn.BatchNorm2D()),
-
-							('fsconv_2',nn.ConvTranspose2D(nf/2,nf/4,3,1,1,1,bias=False)),
-							('relu_2',nn.LeakyReLU()),
-							('batchnorm_2',nn.BatchNorm2D())
-
-						])))
-			nf /= 4
-
-		self.output = nn.Tanh()
+		self.output = nn.Sequential(OrderedDict([
+				('conv',nn.Conv2d(nf,3,3,1,1)),
+				('tanh',nn.Tanh())
+			]))
 
 	def forward(self,z):
 
+		# print('Generator')
+		# print(z.size())
 		out = self.layer1(z)
+		# print(out.size())
 		out = out.view(-1,self.num_filters,4,4)
+		# print(out.size())
 
-		for res in range(math.log2(self.target_res)-2):
+		for res in range(self.num_blocks):
 			out = self.upconv_blocks[res](out)
+			# print(out.size())
 
 		out = self.output(out)
+		# print(out.size())
 
 		return out
 
@@ -56,44 +64,58 @@ class Discriminator(nn.Module):
 
 		super(Discriminator,self).__init__()
 
-		self.num_filters = num_filters
+		self.num_filters = 8 * num_filters // target_res
 		self.num_classes = num_classes
 		self.target_res = target_res
-
-		self.layer1 = nn.Conv2D(3,num_filters,3,1)
+		self.num_blocks = int(math.log2(target_res)-3)
+		self.layer1 = nn.Sequential(OrderedDict([
+						('conv_1',nn.Conv2d(3,self.num_filters,3,2,1)),
+						('relu_1',nn.LeakyReLU()),
+						('batchnorm_1',nn.BatchNorm2d(self.num_filters)),
+					]))
 
 		self.conv_blocks = []
 
-		nf = num_filters
+		nf = int(self.num_filters)
 
-		for res in range(math.log2(target_res)):
+		for res in range(self.num_blocks):
 			self.conv_blocks.append(nn.Sequential(OrderedDict([
-								('conv_1',nn.Conv2D(nf,nf*2,3,1)),
-								('relu_1',nn.LeakyReLU()),
-								('batchnorm_1',nn.BatchNorm2D()),
-								('conv_2',nn.Conv2D(nf*2,nf*4,3,2)),
-								('relu_2',nn.LeakyReLU()),
-								('batchnorm_2',nn.BatchNorm2D())
+								('conv_%d'%(res+2),nn.Conv2d(nf,nf*2,3,2,1)),
+								('relu_%d'%(res+2),nn.LeakyReLU()),
+								('batchnorm_%d'%(res+2),nn.BatchNorm2d(nf*2)),
 							])))
-			nf *= 4
+			nf *= 2
 
-		self.realfake = nn.Linear(target_res*num_filters,1)
+		self.realfake = nn.Sequential(OrderedDict([
+							('logit',nn.Linear(num_filters,1)),
+							('prob',nn.Sigmoid())
+							]))
+
 		self.recognition = nn.Sequential(OrderedDict([
-							('logits',nn.Linear(target_res*num_filters,num_classes)),
+							('logits',nn.Linear(num_filters,num_classes)),
 							('logprobs',nn.LogSoftmax())
 							]))
 
-	def forward(self,x):
 
-		x = self.layer1(x)
+	def forward(self,x,batch_size):
 
-		for res in range(math.log2(self.target_res)-2):
+		# print('Discriminator')
+		# print(x.size())
+		out = self.layer1(x)
+		# print(out.size())
+
+		for res in range(self.num_blocks):
 			out = self.conv_blocks[res](out)
+			# print(out.size())
+		# print(out.size())
+		# out = out.view(batch_size,-1)
+		out = torch.mean(out,-1,False)
+		out = torch.mean(out,-1,False)
+		# print(out.size())
 
 		realfake = self.realfake(out)
 		representation = self.recognition(out)
 
-		return realfake, recognition
-
+		return realfake, representation
 
 
